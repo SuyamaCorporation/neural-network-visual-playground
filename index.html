@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ニューラルネットワーク・ビジュアルプレイグラウンド</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  *:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+  canvas { display: block; }
+  input[type=range] { accent-color: #60a5fa; }
+  select { background: #1f2937; border: 1px solid #374151; color: #f9fafb; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col">
+<header class="bg-gray-800 px-6 py-3 border-b border-gray-700">
+  <h1 class="text-xl font-bold text-green-400">ニューラルネットワーク・ビジュアルプレイグラウンド</h1>
+  <p class="text-xs text-gray-400">XOR / 円 / 螺旋 分類境界リアルタイム可視化</p>
+</header>
+<main class="flex flex-1 gap-3 p-3 overflow-hidden" role="main">
+  <!-- 左: 設定パネル -->
+  <aside class="flex flex-col gap-3 w-52 shrink-0 text-sm" aria-label="ネットワーク設定">
+    <div class="bg-gray-800 rounded-lg p-3 space-y-3">
+      <div>
+        <label class="text-xs font-semibold text-blue-400">問題</label>
+        <select id="selProblem" class="w-full mt-1 text-sm" aria-label="問題選択">
+          <option value="xor">XOR</option>
+          <option value="circle">円</option>
+          <option value="spiral" selected>螺旋</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-purple-400">隠れ層数: <span id="valLayers">2</span></label>
+        <input type="range" id="sliderLayers" min="1" max="3" value="2" class="w-full mt-1" aria-label="隠れ層数">
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-purple-400">各層ニューロン数: <span id="valNeurons">4</span></label>
+        <input type="range" id="sliderNeurons" min="2" max="8" value="4" class="w-full mt-1" aria-label="ニューロン数">
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-orange-400">活性化関数</label>
+        <select id="selActivation" class="w-full mt-1 text-sm" aria-label="活性化関数選択">
+          <option value="relu">ReLU</option>
+          <option value="sigmoid" selected>Sigmoid</option>
+          <option value="tanh">Tanh</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-yellow-400">学習率: <span id="valLR">0.01</span></label>
+        <input type="range" id="sliderLR" min="1" max="50" value="10" class="w-full mt-1" aria-label="学習率">
+      </div>
+    </div>
+    <div class="flex gap-2">
+      <button id="btnTrain" class="flex-1 bg-green-700 hover:bg-green-600 rounded px-3 py-2 text-sm font-semibold transition-colors" aria-label="学習開始・停止">▶ 学習</button>
+      <button id="btnReset" class="flex-1 bg-gray-700 hover:bg-gray-600 rounded px-3 py-2 text-sm font-semibold transition-colors" aria-label="リセット">↺ リセット</button>
+    </div>
+    <div class="bg-gray-800 rounded-lg p-3 space-y-1">
+      <div class="text-xs text-gray-400">損失: <span id="dispLoss" class="text-white font-mono">-</span></div>
+      <div class="text-xs text-gray-400">ステップ: <span id="dispStep" class="text-white font-mono">0</span></div>
+      <div class="text-xs text-gray-400">精度: <span id="dispAcc" class="text-white font-mono">-</span></div>
+    </div>
+    <!-- ネットワーク構造SVG -->
+    <div class="bg-gray-800 rounded-lg p-2">
+      <p class="text-xs text-gray-400 mb-1">ネットワーク構造</p>
+      <svg id="netSvg" width="184" height="140" aria-label="ネットワーク構造図" role="img">
+        <g id="netGraph"></g>
+      </svg>
+    </div>
+  </aside>
+
+  <!-- 中央: 分類境界Canvas -->
+  <div class="flex flex-col gap-2 flex-1 min-w-0">
+    <p class="text-xs text-gray-400">分類境界マップ（赤=クラス1 / 青=クラス0）</p>
+    <canvas id="boundaryCanvas" width="380" height="380" aria-label="分類境界マップ" role="img" class="rounded border border-gray-600"></canvas>
+  </div>
+
+  <!-- 右: 損失曲線 -->
+  <div class="flex flex-col gap-2 w-48 shrink-0">
+    <p class="text-xs text-gray-400">損失曲線</p>
+    <canvas id="lossCanvas" width="180" height="140" aria-label="損失曲線" role="img" class="rounded border border-gray-600 bg-gray-800"></canvas>
+    <div class="bg-gray-800 rounded-lg p-3 text-xs text-gray-400 leading-relaxed space-y-1">
+      <p class="font-semibold text-green-300">アーキテクチャ</p>
+      <p>入力: 2 (x, y)</p>
+      <p id="archHidden">隠れ層: 2×4</p>
+      <p>出力: 1 (Sigmoid)</p>
+      <p class="mt-2 font-semibold text-orange-300">アルゴリズム</p>
+      <p>バックプロパゲーション + SGD</p>
+      <p>バッチサイズ: 全データ</p>
+    </div>
+  </div>
+</main>
+
+<script>
+// --- 活性化関数 ---
+const activations = {
+  relu: { fn: x => Math.max(0, x), d: x => x > 0 ? 1 : 0 },
+  sigmoid: { fn: x => 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, x)))), d: x => { const s = 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, x)))); return s * (1 - s); } },
+  tanh: { fn: x => Math.tanh(x), d: x => 1 - Math.tanh(x)**2 }
+};
+
+// --- データ生成 ---
+function generateData(type) {
+  const data = [];
+  const N = 100;
+  if (type === 'xor') {
+    for (let i = 0; i < N; i++) {
+      const x = Math.random() * 2 - 1, y = Math.random() * 2 - 1;
+      const label = (x > 0) === (y > 0) ? 1 : 0;
+      data.push([x, y, label]);
+    }
+  } else if (type === 'circle') {
+    for (let i = 0; i < N; i++) {
+      const x = Math.random() * 2 - 1, y = Math.random() * 2 - 1;
+      const label = x*x + y*y < 0.5 ? 1 : 0;
+      data.push([x, y, label]);
+    }
+  } else { // spiral
+    for (let c = 0; c < 2; c++) {
+      for (let i = 0; i < N/2; i++) {
+        const t = i / (N/2) * 3 * Math.PI + c * Math.PI;
+        const r = t / (3 * Math.PI) * 0.9;
+        const x = r * Math.cos(t) + (Math.random() - 0.5) * 0.1;
+        const y = r * Math.sin(t) + (Math.random() - 0.5) * 0.1;
+        data.push([x, y, c]);
+      }
+    }
+  }
+  return data;
+}
+
+// --- NN ---
+let nn = null, training = false, stepCount = 0;
+let lossHistory = [];
+let dataset = [];
+
+function buildNN(layers, neurons, actName) {
+  const sizes = [2, ...Array(layers).fill(neurons), 1];
+  const weights = [], biases = [];
+  for (let i = 0; i < sizes.length - 1; i++) {
+    const w = Array.from({length: sizes[i+1]}, () =>
+      Array.from({length: sizes[i]}, () => (Math.random() - 0.5) * 2 / Math.sqrt(sizes[i])));
+    const b = Array(sizes[i+1]).fill(0);
+    weights.push(w); biases.push(b);
+  }
+  return { sizes, weights, biases, actName };
+}
+
+function forward(net, input) {
+  const act = activations[net.actName].fn;
+  const actOut = activations['sigmoid'].fn;
+  let a = input;
+  const as = [a], zs = [];
+  for (let l = 0; l < net.weights.length; l++) {
+    const z = net.weights[l].map((row, j) =>
+      row.reduce((sum, w, k) => sum + w * a[k], 0) + net.biases[l][j]);
+    zs.push(z);
+    a = l < net.weights.length - 1 ? z.map(act) : z.map(actOut);
+    as.push(a);
+  }
+  return { output: a[0], as, zs };
+}
+
+function trainStep(net, data, lr) {
+  const act = activations[net.actName];
+  const actOut = activations['sigmoid'];
+  let totalLoss = 0;
+  const dW = net.weights.map(layer => layer.map(row => row.map(() => 0)));
+  const dB = net.biases.map(layer => layer.map(() => 0));
+
+  data.forEach(([x, y, label]) => {
+    const { output, as, zs } = forward(net, [x, y]);
+    const eps = 1e-12;
+    totalLoss += -(label * Math.log(output + eps) + (1 - label) * Math.log(1 - output + eps));
+    // backward
+    let delta = [(output - label)]; // dL/dz for output
+    for (let l = net.weights.length - 1; l >= 0; l--) {
+      net.weights[l].forEach((row, j) => {
+        row.forEach((_, k) => { dW[l][j][k] += delta[j] * as[l][k]; });
+        dB[l][j] += delta[j];
+      });
+      if (l > 0) {
+        const prevDelta = as[l].map((_, k) =>
+          net.weights[l].reduce((sum, row, j) => sum + row[k] * delta[j], 0) * act.d(zs[l-1][k]));
+        delta = prevDelta;
+      }
+    }
+  });
+
+  // update
+  const scale = lr / data.length;
+  net.weights.forEach((layer, l) => layer.forEach((row, j) => row.forEach((_, k) => { net.weights[l][j][k] -= scale * dW[l][j][k]; })));
+  net.biases.forEach((layer, l) => layer.forEach((_, j) => { net.biases[l][j] -= scale * dB[l][j]; }));
+  return totalLoss / data.length;
+}
+
+// --- 描画 ---
+const bCanvas = document.getElementById('boundaryCanvas');
+const bCtx = bCanvas.getContext('2d');
+const lCanvas = document.getElementById('lossCanvas');
+const lCtx = lCanvas.getContext('2d');
+const RESOLUTION = 60;
+
+function drawBoundary() {
+  const W = bCanvas.width, H = bCanvas.height;
+  const img = bCtx.createImageData(W, H);
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++) {
+      const x = (px / W) * 2 - 1, y = (py / H) * 2 - 1;
+      const { output } = forward(nn, [x, y]);
+      const idx = (py * W + px) * 4;
+      img.data[idx]   = output > 0.5 ? 180 : 60;
+      img.data[idx+1] = 60;
+      img.data[idx+2] = output > 0.5 ? 60 : 180;
+      img.data[idx+3] = 120;
+    }
+  }
+  bCtx.putImageData(img, 0, 0);
+  // 点描画
+  dataset.forEach(([x, y, label]) => {
+    const px = (x + 1) / 2 * W, py = (y + 1) / 2 * H;
+    bCtx.beginPath();
+    bCtx.arc(px, py, 4, 0, Math.PI*2);
+    bCtx.fillStyle = label === 1 ? '#ef4444' : '#3b82f6';
+    bCtx.strokeStyle = '#fff';
+    bCtx.lineWidth = 1;
+    bCtx.fill(); bCtx.stroke();
+  });
+}
+
+function drawLoss() {
+  lCtx.fillStyle = '#111827';
+  lCtx.fillRect(0, 0, lCanvas.width, lCanvas.height);
+  if (lossHistory.length < 2) return;
+  const maxL = Math.max(...lossHistory.slice(-200));
+  const minL = Math.min(...lossHistory.slice(-200));
+  const range = maxL - minL || 1;
+  lCtx.beginPath();
+  lCtx.strokeStyle = '#4ade80';
+  lCtx.lineWidth = 1.5;
+  const hist = lossHistory.slice(-200);
+  hist.forEach((v, i) => {
+    const x = (i / (hist.length - 1)) * (lCanvas.width - 20) + 10;
+    const y = (1 - (v - minL) / range) * (lCanvas.height - 20) + 10;
+    i === 0 ? lCtx.moveTo(x, y) : lCtx.lineTo(x, y);
+  });
+  lCtx.stroke();
+  lCtx.fillStyle = '#6b7280';
+  lCtx.font = '9px monospace';
+  lCtx.fillText(maxL.toFixed(3), 2, 14);
+  lCtx.fillText(minL.toFixed(3), 2, lCanvas.height - 4);
+}
+
+function drawNetwork() {
+  const svg = document.getElementById('netGraph');
+  const sizes = nn.sizes;
+  const W = 184, H = 140;
+  const layerX = sizes.map((_, i) => 15 + i * (W - 30) / (sizes.length - 1));
+  let html = '';
+  // エッジ
+  for (let l = 0; l < sizes.length - 1; l++) {
+    for (let j = 0; j < sizes[l+1]; j++) {
+      for (let k = 0; k < sizes[l]; k++) {
+        const x1 = layerX[l], x2 = layerX[l+1];
+        const y1 = H/2 + (k - (sizes[l]-1)/2) * Math.min(20, 100/sizes[l]);
+        const y2 = H/2 + (j - (sizes[l+1]-1)/2) * Math.min(20, 100/sizes[l+1]);
+        const w = nn.weights[l][j][k];
+        const c = w > 0 ? '#4ade80' : '#f87171';
+        const opacity = Math.min(Math.abs(w) * 0.5 + 0.1, 0.8);
+        html += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${c}" stroke-opacity="${opacity.toFixed(2)}" stroke-width="1"/>`;
+      }
+    }
+  }
+  // ノード
+  for (let l = 0; l < sizes.length; l++) {
+    for (let j = 0; j < sizes[l]; j++) {
+      const x = layerX[l];
+      const y = H/2 + (j - (sizes[l]-1)/2) * Math.min(20, 100/sizes[l]);
+      const color = l === 0 ? '#60a5fa' : l === sizes.length-1 ? '#f97316' : '#a78bfa';
+      html += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="${color}" stroke="#1f2937" stroke-width="1"/>`;
+    }
+  }
+  svg.innerHTML = html;
+}
+
+function computeAccuracy() {
+  let correct = 0;
+  dataset.forEach(([x, y, label]) => {
+    const { output } = forward(nn, [x, y]);
+    if ((output > 0.5 ? 1 : 0) === label) correct++;
+  });
+  return correct / dataset.length;
+}
+
+// --- コントロール ---
+let animId = null;
+let stepsPerFrame = 10;
+
+function getCurrentParams() {
+  return {
+    layers: +document.getElementById('sliderLayers').value,
+    neurons: +document.getElementById('sliderNeurons').value,
+    actName: document.getElementById('selActivation').value,
+    lr: +document.getElementById('sliderLR').value / 1000
+  };
+}
+
+function resetAll() {
+  training = false;
+  if (animId) { cancelAnimationFrame(animId); animId = null; }
+  document.getElementById('btnTrain').textContent = '▶ 学習';
+  stepCount = 0; lossHistory = [];
+  const p = getCurrentParams();
+  dataset = generateData(document.getElementById('selProblem').value);
+  nn = buildNN(p.layers, p.neurons, p.actName);
+  document.getElementById('archHidden').textContent = `隠れ層: ${p.layers}×${p.neurons}`;
+  document.getElementById('dispLoss').textContent = '-';
+  document.getElementById('dispStep').textContent = '0';
+  document.getElementById('dispAcc').textContent = '-';
+  drawBoundary(); drawNetwork(); drawLoss();
+}
+
+function trainLoop() {
+  if (!training) return;
+  const lr = +document.getElementById('sliderLR').value / 1000;
+  let loss = 0;
+  for (let i = 0; i < stepsPerFrame; i++) {
+    loss = trainStep(nn, dataset, lr);
+    stepCount++;
+  }
+  lossHistory.push(loss);
+  document.getElementById('dispLoss').textContent = loss.toFixed(4);
+  document.getElementById('dispStep').textContent = stepCount;
+  if (stepCount % 50 < stepsPerFrame) {
+    document.getElementById('dispAcc').textContent = (computeAccuracy() * 100).toFixed(1) + '%';
+    drawBoundary(); drawNetwork();
+  }
+  drawLoss();
+  animId = requestAnimationFrame(trainLoop);
+}
+
+document.getElementById('btnTrain').addEventListener('click', () => {
+  training = !training;
+  document.getElementById('btnTrain').textContent = training ? '⏸ 停止' : '▶ 学習';
+  if (training) trainLoop();
+});
+document.getElementById('btnReset').addEventListener('click', resetAll);
+document.getElementById('sliderLayers').addEventListener('input', e => {
+  document.getElementById('valLayers').textContent = e.target.value;
+});
+document.getElementById('sliderNeurons').addEventListener('input', e => {
+  document.getElementById('valNeurons').textContent = e.target.value;
+});
+document.getElementById('sliderLR').addEventListener('input', e => {
+  document.getElementById('valLR').textContent = (+e.target.value / 1000).toFixed(3);
+});
+document.getElementById('selProblem').addEventListener('change', resetAll);
+
+resetAll();
+</script>
+</body>
+</html>
